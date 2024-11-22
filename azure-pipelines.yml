@@ -11,55 +11,27 @@ variables:
   acrName: 'ntwdkcontainersacr'
   aksClusterName: 'containers'  # Replace with your AKS cluster name
   resourceGroup: 'containers'  # Replace with your resource group name
-  azureServiceConnection: 'DanielKocot'
 
 steps:
-  - task: Docker@2
-    inputs:
-      command: buildAndPush
-      repository: $(acrName).azurecr.io/$(imageName)
-      dockerfile: $(Build.SourcesDirectory)/app/Dockerfile
-      containerRegistry: '$(azureServiceConnection)'
-      tags: |
-        $(Build.BuildId)
-
   - task: AzureCLI@2
     inputs:
-      azureSubscription: '$(azureServiceConnection)'
+      azureSubscription: 'DanielKocot'
       scriptType: 'bash'
       scriptLocation: 'inlineScript'
       inlineScript: |
+        # Log in to ACR
+        az acr login --name $(acrName)
+        
+        # Build and push Docker image
+        docker build -t $(acrName).azurecr.io/$(imageName):$(Build.BuildId) $(Build.SourcesDirectory)/app
+        docker push $(acrName).azurecr.io/$(imageName):$(Build.BuildId)
+        
         # Get AKS credentials
         az aks get-credentials --resource-group $(resourceGroup) --name $(aksClusterName)
-
-  - task: Kubernetes@1
-    inputs:
-      connectionType: 'Azure Resource Manager'
-      azureSubscriptionEndpoint: '$(azureServiceConnection)'
-      azureResourceGroup: '$(resourceGroup)'
-      kubernetesCluster: '$(aksClusterName)'
-      command: 'create'
-      secretName: 'acr-secret'
-      dockerRegistryEndpoint: '$(azureServiceConnection)'
-
-  - task: Kubernetes@1
-    inputs:
-      connectionType: 'Azure Resource Manager'
-      azureSubscriptionEndpoint: '$(azureServiceConnection)'
-      azureResourceGroup: '$(resourceGroup)'
-      kubernetesCluster: '$(aksClusterName)'
-      command: 'apply'
-      useConfigurationFile: true
-      configuration: '$(Build.SourcesDirectory)/manifests/deployment.yaml'
-      secretName: 'acr-secret'
-
-  - task: Kubernetes@1
-    inputs:
-      connectionType: 'Azure Resource Manager'
-      azureSubscriptionEndpoint: '$(azureServiceConnection)'
-      azureResourceGroup: '$(resourceGroup)'
-      kubernetesCluster: '$(aksClusterName)'
-      command: 'apply'
-      useConfigurationFile: true
-      configuration: '$(Build.SourcesDirectory)/manifests/service.yaml'
-      secretName: 'acr-secret'
+        
+        # Create a secret for ACR
+        kubectl create secret docker-registry acr-secret --docker-server=$(acrName).azurecr.io --docker-username=$(ACR_USERNAME) --docker-password=$(ACR_PASSWORD) --docker-email=$(ACR_EMAIL)
+        
+        # Apply Kubernetes manifests
+        kubectl apply -f $(Build.SourcesDirectory)/manifests/deployment.yaml
+        kubectl apply -f $(Build.SourcesDirectory)/manifests/service.yaml
