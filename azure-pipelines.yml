@@ -11,27 +11,78 @@ variables:
   acrName: 'ntwdkcontainersacr'
   aksClusterName: 'containers'  # Replace with your AKS cluster name
   resourceGroup: 'containers'  # Replace with your resource group name
+  azureServiceConnection: 'DanielKocot'
 
 steps:
+  - script: |
+      # Generate Dockerfile
+      echo "Generating Dockerfile..."
+      cat <<EOF > Dockerfile
+      FROM node:14
+      WORKDIR /usr/src/app
+      COPY package*.json ./
+      RUN npm install
+      COPY . .
+      EXPOSE 3000
+      CMD ["node", "app.js"]
+      EOF
+    displayName: 'Generate Dockerfile'
+
+  - task: Docker@2
+    inputs:
+      command: buildAndPush
+      repository: $(acrName).azurecr.io/$(imageName)
+      dockerfile: $(Build.SourcesDirectory)/Dockerfile
+      containerRegistry: '$(azureServiceConnection)'
+      tags: |
+        $(Build.BuildId)
+
   - task: AzureCLI@2
     inputs:
-      azureSubscription: 'DanielKocot'
+      azureSubscription: '$(azureServiceConnection)'
       scriptType: 'bash'
       scriptLocation: 'inlineScript'
       inlineScript: |
-        # Log in to ACR
-        az acr login --name $(acrName)
-        
-        # Build and push Docker image
-        docker build -t $(acrName).azurecr.io/$(imageName):$(Build.BuildId) $(Build.SourcesDirectory)/app
-        docker push $(acrName).azurecr.io/$(imageName):$(Build.BuildId)
-        
         # Get AKS credentials
         az aks get-credentials --resource-group $(resourceGroup) --name $(aksClusterName)
         
         # Create a secret for ACR
         kubectl create secret docker-registry acr-secret --docker-server=$(acrName).azurecr.io --docker-username=$(ACR_USERNAME) --docker-password=$(ACR_PASSWORD) --docker-email=$(ACR_EMAIL)
         
-        # Apply Kubernetes manifests
-        kubectl apply -f $(Build.SourcesDirectory)/manifests/deployment.yaml
-        kubectl apply -f $(Build.SourcesDirectory)/manifests/service.yaml
+        # Define and apply Kubernetes deployment
+        cat <<EOF | kubectl apply -f -
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: my-app
+        spec:
+          replicas: 2
+          selector:
+            matchLabels:
+              app: my-app
+          template:
+            metadata:
+              labels:
+                app: my-app
+            spec:
+              containers:
+              - name: my-app-container
+                image: $(acrName).azurecr.io/$(imageName):$(Build.BuildId)
+                ports:
+                - containerPort: 3000
+        EOF
+        
+        # Define and apply Kubernetes service
+        cat <<EOF | kubectl apply -f -
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: my-app-service
+        spec:
+          type: LoadBalancer
+          ports:
+          - port: 80
+            targetPort: 3000
+          selector:
+            app: my-app
+        EOF
